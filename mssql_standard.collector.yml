@@ -1,0 +1,320 @@
+# A collector defining standard metrics for Microsoft SQL Server.
+#
+# It is required that the SQL Server user has the following permissions:
+#
+#   GRANT VIEW ANY DEFINITION TO
+#   GRANT VIEW SERVER STATE TO
+#
+collector_name: mssql_standard
+
+# Similar to global.min_interval, but applies to the queries defined by this collector only.
+#min_interval: 0s
+
+metrics:
+  - metric_name: mssql_local_time_seconds
+    type: gauge
+    help: 'Local time in seconds since epoch (Unix time).'
+    values: [unix_time]
+    query: |
+      SELECT DATEDIFF(second, '19700101', GETUTCDATE()) AS unix_time
+
+  - metric_name: mssql_connections
+    type: gauge
+    help: 'Number of active connections.'
+    key_labels:
+      - db
+    values: [count]
+    query: |
+      SELECT DB_NAME(sp.dbid) AS db, COUNT(sp.spid) AS count
+      FROM sys.sysprocesses sp
+      GROUP BY DB_NAME(sp.dbid)
+
+  #
+  # Collected from sys.dm_os_performance_counters
+  #
+  - metric_name: mssql_deadlocks
+    type: counter
+    help: 'Number of lock requests that resulted in a deadlock.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Number of Deadlocks/sec' AND instance_name = '_Total'
+
+  - metric_name: mssql_user_errors
+    type: counter
+    help: 'Number of user errors.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Errors/sec' AND instance_name = 'User Errors'
+
+  - metric_name: mssql_kill_connection_errors
+    type: counter
+    help: 'Number of severe errors that caused SQL Server to kill the connection.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Errors/sec' AND instance_name = 'Kill Connection Errors'
+
+  - metric_name: mssql_page_life_expectancy_seconds
+    type: gauge
+    help: 'The minimum number of seconds a page will stay in the buffer pool on this node without references.'
+    values: [cntr_value]
+    query: |
+      SELECT top(1) cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Page life expectancy'
+
+  - metric_name: mssql_batch_requests
+    type: counter
+    help: 'Number of command batches received.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Batch Requests/sec'
+
+  - metric_name: mssql_log_growths
+    type: counter
+    help: 'Number of times the transaction log has been expanded, per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT rtrim(instance_name) AS db, cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Log Growths' AND instance_name <> '_Total'
+
+  #
+  # Collected from internet self
+  #
+
+  - metric_name: mssql_long_time_sql
+    type: gauge
+    help: 'sql that took a long time and not finished'
+    key_labels:
+      - sql_content
+      - time_runs
+      - first_run_time
+    values: [number_runs]
+    query: |
+      SELECT TOP 10 ST.text AS 'sql_content',QS.execution_count AS 'number_runs',QS.total_elapsed_time AS 'time_runs',QS.creation_time AS 'first_run_time' FROM sys.dm_exec_query_stats QS CROSS APPLY sys.dm_exec_sql_text(QS.sql_handle) ST where DateDiff(dd,QS.creation_time,getdate())=0 ORDER BY QS.total_elapsed_time DESC
+
+  - metric_name: mssql_buffer_cache_hit_ratio
+    type: gauge
+    help: 'mssql_buffer_cache_hit_ratio'
+    values: [BufferCacheHitRatio]
+    query: |
+      SELECT  CAST(CAST((a.cntr_value * 1.0 / b.cntr_value)*100 as int) AS VARCHAR(20)) as BufferCacheHitRatio FROM ( SELECT * FROM sys.dm_os_performance_counters WHERE counter_name = 'Buffer cache hit ratio' AND object_name = CASE WHEN @@SERVICENAME = 'MSSQLSERVER' THEN 'SQLServer:Buffer Manager' ELSE 'MSSQL$' + rtrim(@@SERVICENAME) + ':Buffer Manager' END ) a CROSS JOIN ( SELECT * from sys.dm_os_performance_counters WHERE counter_name = 'Buffer cache hit ratio base' and object_name = CASE WHEN @@SERVICENAME = 'MSSQLSERVER' THEN 'SQLServer:Buffer Manager' ELSE 'MSSQL$' + rtrim(@@SERVICENAME) +':Buffer Manager' END) b
+
+  - metric_name: mssql_version
+    type: gauge
+    help: 'version of mssql'
+    key_labels:
+      - version
+    values: [value]
+    query: |
+      select substring(@@version,1,51) as version ,1 as value
+
+  - metric_name: mssql_servername
+    type: gauge
+    help: 'server name of mssql'
+    key_labels:
+      - servername
+    values: [value]
+    query: |
+      select @@servername as servername,1 as value 
+
+  - metric_name: mssql_temdb_usedspace
+    type: gauge
+    help: 'used space in tempdb'
+    key_labels:
+      - name
+      - usedspace
+    values: [size]
+    query: |
+      select size ,CONVERT(decimal(10,2),A.SIZE/128.0 - ((SIZE/128.0) - CAST(FILEPROPERTY(A.NAME, 'SPACEUSED') AS int)/128.0)) as usedspace,name from tempdb.sys.database_files as a order by name
+
+  - metric_name: mssql_start_time
+    type: gauge
+    help: 'start time of mssql'
+    key_labels:
+      - start_time
+    values: [value]
+    query: |
+      select convert(varchar(30),login_time,120) as start_time,1 as value from master..sysprocesses where spid=1
+
+  - metric_name: mssql_cpu_info
+    type: gauge
+    help: 'the cpu information of mssql'
+    key_labels:
+      - Logical_CPU_Count
+      - Physical_CPU_Count
+      - Physical_Memory
+      - virtual_machine_type_desc
+    values: [value]
+    query: |
+      SELECT cpu_count AS Logical_CPU_Count, cpu_count/hyperthread_ratio AS Physical_CPU_Count, physical_memory_kb/1024 AS Physical_Memory,virtual_machine_type_desc,1 as value FROM sys.dm_os_sys_info WITH (NOLOCK) OPTION (RECOMPILE)
+
+  - metric_name: mssql_db_processes_count
+    type: gauge
+    help: 'the processes count of mssql every db'
+    key_labels:
+      - db
+    values: [count]
+    query: |
+      SELECT DB_NAME(sp.dbid) AS db, COUNT(sp.spid) AS count FROM sys.sysprocesses sp GROUP BY DB_NAME(sp.dbid)
+
+  - metric_name: mssql_tablespace_size
+    type: gauge
+    help: 'the tablespace size of mssql'
+    key_labels:
+      - Database_Name
+      - name
+    values: [Total_Size]
+    query: |
+      SELECT DB_NAME([database_id])AS Database_Name, name,CONVERT( bigint, size/128.0) AS Total_Size FROM sys.master_files WITH (NOLOCK) WHERE [database_id] > 4 AND [database_id] <> 32767 OR [database_id] = 2 ORDER BY DB_NAME([database_id]) OPTION (RECOMPILE)
+
+  - metric_name: mssql_dbcached_size
+    type: gauge
+    help: 'the processes count of mssql every db'
+    key_labels:
+      - Database_Name
+    values: [Cached_Size]
+    query: |
+      SELECT DB_NAME(database_id) AS Database_Name,COUNT(*) * 8/1024.0 AS Cached_Size FROM sys.dm_os_buffer_descriptors WITH (NOLOCK) WHERE database_id > 4 AND database_id <> 32767 GROUP BY DB_NAME(database_id) ORDER BY Cached_Size DESC OPTION (RECOMPILE)
+  - metric_name: mssql_user_session_count
+    type: gauge
+    help: 'the count of seesion per user'
+    key_labels:
+      - login_name
+    values: [session_count]
+    query: |
+      SELECT login_name, COUNT(session_id) AS [session_count] FROM sys.dm_exec_sessions WITH (NOLOCK) GROUP BY login_name ORDER BY COUNT(session_id) DESC OPTION (RECOMPILE)
+
+  - metric_name: mssql_page_life_expectancy
+    type: gauge
+    help: 'Page Life Expectancy (PLE) value for default instance,PLE is one way to measure memory pressure,Higher PLE is better. Watch the trend, not the absolute value'
+    values: [Page_Life_Expectancy]
+    query: |
+      SELECT cntr_value AS Page_Life_Expectancy FROM sys.dm_os_performance_counters WITH (NOLOCK) WHERE [object_name] LIKE N'%Buffer Manager%' AND counter_name = N'Page life expectancy' OPTION (RECOMPILE)
+
+  - metric_name: mssql_average_task_count
+    type: gauge
+    help: 'Get Average Task Counts (run multiple times) ,Sustained values above 10 suggest further investigation in that area'
+    key_labels:
+      - Avg_Task_Count
+      - Avg_Runnable_Task
+    values: [Avg_Pending_DiskIO]
+    query: |
+      SELECT AVG(current_tasks_count) AS Avg_Task_Count,AVG(runnable_tasks_count) AS Avg_Runnable_Task,AVG(pending_disk_io_count) AS Avg_Pending_DiskIO FROM sys.dm_os_schedulers WITH (NOLOCK) WHERE scheduler_id < 255 OPTION (RECOMPILE)
+
+  - metric_name: mssql_memory_grant
+    type: gauge
+    help: 'Memory Grants Outstanding value for default instance,Memory Grants Outstanding above zero,for a sustained period is a secondary indicator of memory pressure'
+    values: [Memory_Grants_Outstanding]
+    query: |
+      SELECT cntr_value AS Memory_Grants_Outstanding FROM sys.dm_os_performance_counters WITH (NOLOCK) WHERE [object_name] LIKE N'%Memory Manager%' AND counter_name = N'Memory Grants Outstanding' OPTION (RECOMPILE);
+
+  #
+  # Collected from sys.dm_io_virtual_file_stats
+  #
+  - metric_name: mssql_io_stall_seconds
+    type: counter
+    help: 'Stall time in seconds per database and I/O operation.'
+    key_labels:
+      - db
+    value_label: operation
+    values:
+      - read
+      - write
+    query_ref: mssql_io_stall
+  - metric_name: mssql_io_stall_total_seconds
+    type: counter
+    help: 'Total stall time in seconds per database.'
+    key_labels:
+      - db
+    values:
+      - io_stall
+    query_ref: mssql_io_stall
+
+  #
+  # Collected from sys.dm_os_process_memory
+  #
+  - metric_name: mssql_resident_memory_bytes
+    type: gauge
+    help: 'SQL Server resident memory size (AKA working set).'
+    values: [resident_memory_bytes]
+    query_ref: mssql_process_memory
+
+  - metric_name: mssql_virtual_memory_bytes
+    type: gauge
+    help: 'SQL Server committed virtual memory size.'
+    values: [virtual_memory_bytes]
+    query_ref: mssql_process_memory
+
+  - metric_name: mssql_memory_utilization_percentage
+    type: gauge
+    help: 'The percentage of committed memory that is in the working set.'
+    values: [memory_utilization_percentage]
+    query_ref: mssql_process_memory
+
+  - metric_name: mssql_page_fault_count
+    type: counter
+    help: 'The number of page faults that were incurred by the SQL Server process.'
+    values: [page_fault_count]
+    query_ref: mssql_process_memory
+
+  #
+  # Collected from sys.dm_os_sys_memory
+  #
+  - metric_name: mssql_os_memory
+    type: gauge
+    help: 'OS physical memory, used and available.'
+    value_label: 'state'
+    values: [used, available]
+    query: |
+      SELECT
+        (total_physical_memory_kb - available_physical_memory_kb) * 1024 AS used,
+        available_physical_memory_kb * 1024 AS available
+      FROM sys.dm_os_sys_memory
+
+  - metric_name: mssql_os_page_file
+    type: gauge
+    help: 'OS page file, used and available.'
+    value_label: 'state'
+    values: [used, available]
+    query: |
+      SELECT
+        (total_page_file_kb - available_page_file_kb) * 1024 AS used,
+        available_page_file_kb * 1024 AS available
+      FROM sys.dm_os_sys_memory
+
+queries:
+  # Populates `mssql_io_stall` and `mssql_io_stall_total`
+  - query_name: mssql_io_stall
+    query: |
+      SELECT
+        cast(DB_Name(a.database_id) as varchar) AS [db],
+        sum(io_stall_read_ms) / 1000.0 AS [read],
+        sum(io_stall_write_ms) / 1000.0 AS [write],
+        sum(io_stall) / 1000.0 AS io_stall
+      FROM
+        sys.dm_io_virtual_file_stats(null, null) a
+      INNER JOIN sys.master_files b ON a.database_id = b.database_id AND a.file_id = b.file_id
+      GROUP BY a.database_id
+
+  # Populates `mssql_resident_memory_bytes`, `mssql_virtual_memory_bytes`, `mssql_memory_utilization_percentage` and
+  # `mssql_page_fault_count`.
+  - query_name: mssql_process_memory
+    query: |
+      SELECT
+        physical_memory_in_use_kb * 1024 AS resident_memory_bytes,
+        virtual_address_space_committed_kb * 1024 AS virtual_memory_bytes,
+        memory_utilization_percentage,
+        page_fault_count
+      FROM sys.dm_os_process_memory
+      
